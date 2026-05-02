@@ -24,6 +24,7 @@ wss.on("connection", (socket: WebSocket) => {
         validateJoinToken(msg, secret);
         sessionId = msg.sessionId;
         role = msg.role;
+        console.log("[signaling] join", { sessionId, role, connectionPeerId });
         const room = rooms.get(sessionId) ?? { viewers: new Map<string, WebSocket>() };
         if (role === "worker") room.worker = socket;
         if (role === "browser") room.browser = { peerId: connectionPeerId, socket };
@@ -36,6 +37,7 @@ wss.on("connection", (socket: WebSocket) => {
       if (!room) return;
       if (role === "worker") {
         const targetPeerId = "peerId" in msg ? msg.peerId : undefined;
+        console.log("[signaling] worker->peer", { type: msg.type, sessionId: msg.sessionId, targetPeerId });
         const browser = room.browser;
         if (targetPeerId && browser && browser.peerId === targetPeerId) {
           browser.socket.send(JSON.stringify(msg));
@@ -50,6 +52,7 @@ wss.on("connection", (socket: WebSocket) => {
       }
 
       room.worker?.send(JSON.stringify({ ...msg, peerId: connectionPeerId }));
+      console.log("[signaling] peer->worker", { type: msg.type, sessionId: msg.sessionId, peerId: connectionPeerId, role });
     } catch {
       socket.send(JSON.stringify({ type: "disconnect", reason: "invalid-message" }));
     }
@@ -62,6 +65,7 @@ wss.on("connection", (socket: WebSocket) => {
     if (role === "browser" && room.browser?.peerId === connectionPeerId) delete room.browser;
     if (role === "viewer") room.viewers.delete(connectionPeerId);
     if (!room.browser && !room.worker && room.viewers.size === 0) rooms.delete(sessionId);
+    console.log("[signaling] close", { sessionId, role, connectionPeerId });
   });
 });
 

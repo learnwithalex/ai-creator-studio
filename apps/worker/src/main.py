@@ -257,6 +257,16 @@ async def reserve(req: web.Request):
     if state.signaling_task:
         state.signaling_task.cancel()
     if state.session_id and state.signaling_url and state.signaling_token:
+        print(
+            "[worker] reserve",
+            {
+                "sessionId": state.session_id,
+                "signalingUrl": state.signaling_url,
+                "style": state.style,
+                "hasAvatar": bool(body.get("avatarDataUrl")),
+            },
+            flush=True,
+        )
         state.signaling_task = asyncio.create_task(
             signaling_worker_loop(state.session_id, state.signaling_url, state.signaling_token)
         )
@@ -338,6 +348,7 @@ async def signaling_worker_loop(session_id: str, signaling_url: str, signaling_t
             async with ClientSession() as client:
                 async with client.ws_connect(signaling_url, heartbeat=20) as ws:
                     await ws.send_json({"type": "join", "sessionId": session_id, "role": "worker", "token": signaling_token})
+                    print("[worker] signaling-joined", {"sessionId": session_id, "signalingUrl": signaling_url}, flush=True)
                     peers: dict[str, RTCPeerConnection] = {}
 
                     async for message in ws:
@@ -348,6 +359,7 @@ async def signaling_worker_loop(session_id: str, signaling_url: str, signaling_t
                         if msg_type == "offer":
                             sdp = payload.get("sdp", {})
                             peer_id = payload.get("peerId") or "browser"
+                            print("[worker] got-offer", {"sessionId": session_id, "peerId": peer_id}, flush=True)
                             if peer_id in peers:
                                 await peers[peer_id].close()
                             is_first_source_offer = state.source_peer_id is None and state.source_output_track is None
@@ -375,6 +387,7 @@ async def signaling_worker_loop(session_id: str, signaling_url: str, signaling_t
                                     "sdp": {"type": pc.localDescription.type, "sdp": pc.localDescription.sdp},
                                 }
                             )
+                            print("[worker] sent-answer", {"sessionId": session_id, "peerId": peer_id}, flush=True)
                         elif msg_type == "ice-candidate":
                             peer_id = payload.get("peerId") or "browser"
                             candidate = payload.get("candidate")
