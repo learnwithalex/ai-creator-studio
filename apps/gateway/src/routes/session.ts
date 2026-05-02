@@ -42,7 +42,8 @@ export async function sessionRoutes(app: FastifyInstance) {
     const body = (req.body as SessionStartRequest | undefined) ?? {};
     const avatarDataUrl = body.avatarDataUrl?.slice(0, 2_000_000);
     const style = body.style ?? "default";
-    const signalingUrl = process.env.SIGNALING_URL ?? "ws://localhost:4001/ws";
+    const browserSignalingUrl = process.env.SIGNALING_URL_BROWSER ?? "ws://localhost:4001/ws";
+    const workerSignalingUrl = process.env.SIGNALING_URL_WORKER ?? process.env.SIGNALING_URL ?? browserSignalingUrl;
     let result = await runStartSessionWorkflow(
       {
         reserveCredits,
@@ -62,7 +63,8 @@ export async function sessionRoutes(app: FastifyInstance) {
       {
         userId,
         startupReserveCredits: STARTUP_RESERVE_CREDITS,
-        signalingUrl,
+        browserSignalingUrl,
+        workerSignalingUrl,
         obsBaseUrl: process.env.OBS_BASE_URL ?? "https://localhost:3000",
         sessionTokenSecret: SESSION_TOKEN_SECRET,
         style,
@@ -92,7 +94,8 @@ export async function sessionRoutes(app: FastifyInstance) {
           {
             userId,
             startupReserveCredits: STARTUP_RESERVE_CREDITS,
-            signalingUrl,
+            browserSignalingUrl,
+            workerSignalingUrl,
             obsBaseUrl: process.env.OBS_BASE_URL ?? "https://localhost:3000",
             sessionTokenSecret: SESSION_TOKEN_SECRET,
             style,

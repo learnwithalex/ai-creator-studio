@@ -43,7 +43,8 @@ export type StopSessionDeps = {
 export type StartSessionParams = {
   userId: string;
   startupReserveCredits: number;
-  signalingUrl: string;
+  browserSignalingUrl: string;
+  workerSignalingUrl: string;
   obsBaseUrl: string;
   sessionTokenSecret: string;
   style?: string;
@@ -88,7 +89,7 @@ export async function runStartSessionWorkflow(
 
   const reserved = await deps.workerReserve(worker.endpoint, {
     sessionId,
-    signalingUrl: params.signalingUrl,
+    signalingUrl: params.workerSignalingUrl,
     signalingToken: workerToken,
     style: params.style,
     avatarDataUrl: params.avatarDataUrl
@@ -113,9 +114,9 @@ export async function runStartSessionWorkflow(
     ok: true,
     data: {
       sessionId,
-      signalingUrl: params.signalingUrl,
+      signalingUrl: params.browserSignalingUrl,
       signalingToken: browserToken,
-      obsUrl: `${params.obsBaseUrl}/studio/obs/${sessionId}?token=${obsToken}&signalingUrl=${encodeURIComponent(params.signalingUrl)}`,
+      obsUrl: `${params.obsBaseUrl}/studio/obs/${sessionId}?token=${obsToken}&signalingUrl=${encodeURIComponent(params.browserSignalingUrl)}`,
       workerId: worker.workerId,
       expiresAt: new Date(Date.now() + 30 * 60_000).toISOString()
     }

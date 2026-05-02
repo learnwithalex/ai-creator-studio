@@ -326,6 +326,16 @@ async def signaling_worker_loop(session_id: str, signaling_url: str, signaling_t
                             pc = create_peer_connection(peer_id)
                             peers[peer_id] = pc
                             await pc.setRemoteDescription(RTCSessionDescription(sdp=sdp["sdp"], type=sdp["type"]))
+
+                            # Ensure the first browser/source track has a chance to attach
+                            # before creating the answer, otherwise media may negotiate without
+                            # an outbound transformed video sender.
+                            if state.source_peer_id is None:
+                                for _ in range(20):
+                                    if state.source_peer_id == peer_id and state.source_output_track is not None:
+                                        break
+                                    await asyncio.sleep(0.05)
+
                             answer = await pc.createAnswer()
                             await pc.setLocalDescription(answer)
                             await wait_for_ice_gathering_complete(pc)

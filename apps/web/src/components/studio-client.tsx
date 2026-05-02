@@ -20,7 +20,10 @@ export function StudioClient() {
   async function startSession() {
     setStatus("requesting camera");
     const media = await navigator.mediaDevices.getUserMedia({ video: { width: 1280, height: 720, frameRate: 30 }, audio: false });
-    if (inputRef.current) inputRef.current.srcObject = media;
+    if (inputRef.current) {
+      inputRef.current.srcObject = media;
+      void inputRef.current.play().catch(() => undefined);
+    }
 
     const started = await fetch(`${gatewayBase}/session/start`, {
       method: "POST",
@@ -33,7 +36,10 @@ export function StudioClient() {
 
     cleanupRef.current = await connectWebRTC(
       { signalingUrl: started.signalingUrl, sessionId: started.sessionId, token: started.signalingToken, role: "browser", onRemoteStream: (stream: MediaStream) => {
-        if (outputRef.current) outputRef.current.srcObject = stream;
+        if (outputRef.current) {
+          outputRef.current.srcObject = stream;
+          void outputRef.current.play().catch(() => undefined);
+        }
         setStatus("active");
       } },
       media

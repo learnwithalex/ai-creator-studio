@@ -15,7 +15,8 @@ describe("session workflow", () => {
       {
         userId: "u1",
         startupReserveCredits: 300,
-        signalingUrl: "ws://localhost:4001/ws",
+        browserSignalingUrl: "ws://localhost:4001/ws",
+        workerSignalingUrl: "wss://introverted-bay.outray.app/ws",
         obsBaseUrl: "http://localhost:3000",
         sessionTokenSecret: "dev-secret"
       }
@@ -37,7 +38,8 @@ describe("session workflow", () => {
       {
         userId: "u1",
         startupReserveCredits: 300,
-        signalingUrl: "ws://localhost:4001/ws",
+        browserSignalingUrl: "ws://localhost:4001/ws",
+        workerSignalingUrl: "wss://introverted-bay.outray.app/ws",
         obsBaseUrl: "http://localhost:3000",
         sessionTokenSecret: "dev-secret"
       }
@@ -64,7 +66,8 @@ describe("session workflow", () => {
       {
         userId: "u1",
         startupReserveCredits: 300,
-        signalingUrl: "ws://localhost:4001/ws",
+        browserSignalingUrl: "ws://localhost:4001/ws",
+        workerSignalingUrl: "wss://introverted-bay.outray.app/ws",
         obsBaseUrl: "http://localhost:3000",
         sessionTokenSecret: "dev-secret"
       }
@@ -96,7 +99,8 @@ describe("session workflow", () => {
       {
         userId: "u1",
         startupReserveCredits: 300,
-        signalingUrl: "ws://localhost:4001/ws",
+        browserSignalingUrl: "ws://localhost:4001/ws",
+        workerSignalingUrl: "wss://introverted-bay.outray.app/ws",
         obsBaseUrl: "http://localhost:3000",
         sessionTokenSecret: "dev-secret"
       }
