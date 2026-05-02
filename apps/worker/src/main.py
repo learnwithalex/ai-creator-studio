@@ -1,7 +1,9 @@
 import asyncio
 import base64
+import inspect
 import os
 import time
+import traceback
 from typing import Optional, Set
 
 import av
@@ -288,22 +290,27 @@ async def release(_: web.Request):
 
 
 async def webrtc_offer(req: web.Request):
-    body = await req.json()
-    offer = RTCSessionDescription(sdp=body["sdp"], type=body["type"])
-    is_first_source_offer = state.source_peer_id is None and state.source_output_track is None
-    pc = create_peer_connection("browser-http", prime_source_sender=is_first_source_offer)
-    await pc.setRemoteDescription(offer)
+    try:
+        body = await req.json()
+        offer = RTCSessionDescription(sdp=body["sdp"], type=body["type"])
+        is_first_source_offer = state.source_peer_id is None and state.source_output_track is None
+        pc = create_peer_connection("browser-http", prime_source_sender=is_first_source_offer)
+        await pc.setRemoteDescription(offer)
 
-    if state.source_peer_id is None:
-        for _ in range(20):
-            if state.source_peer_id == "browser-http" and state.source_output_track is not None:
-                break
-            await asyncio.sleep(0.05)
+        if state.source_peer_id is None:
+            for _ in range(20):
+                if state.source_peer_id == "browser-http" and state.source_output_track is not None:
+                    break
+                await asyncio.sleep(0.05)
 
-    answer = await pc.createAnswer()
-    await pc.setLocalDescription(answer)
-    await wait_for_ice_gathering_complete(pc)
-    return web.json_response({"sdp": pc.localDescription.sdp, "type": pc.localDescription.type})
+        answer = await pc.createAnswer()
+        await pc.setLocalDescription(answer)
+        await wait_for_ice_gathering_complete(pc)
+        return web.json_response({"sdp": pc.localDescription.sdp, "type": pc.localDescription.type})
+    except Exception as exc:
+        print("[worker] webrtc-offer-error", repr(exc), flush=True)
+        print(traceback.format_exc(), flush=True)
+        return web.json_response({"error": "WEBRTC_OFFER_FAILED", "detail": str(exc)}, status=500)
 
 
 def create_peer_connection(peer_id: str, prime_source_sender: bool = False) -> RTCPeerConnection:
@@ -334,13 +341,19 @@ def create_peer_connection(peer_id: str, prime_source_sender: bool = False) -> R
         if track.kind == "video":
             transformed = VideoTransformTrack(track, state)
             if source_sender is not None:
-                asyncio.create_task(source_sender.replaceTrack(transformed))
+                asyncio.create_task(replace_sender_track(source_sender, transformed))
             else:
                 pc.addTrack(transformed)
             state.source_peer_id = peer_id
             state.source_output_track = transformed
 
     return pc
+
+
+async def replace_sender_track(sender, track):
+    result = sender.replaceTrack(track)
+    if inspect.isawaitable(result):
+        await result
 
 
 async def wait_for_ice_gathering_complete(pc: RTCPeerConnection):
