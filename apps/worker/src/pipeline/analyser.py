@@ -51,12 +51,16 @@ def build_source_face(face_app, avatar_data_url: Optional[str]) -> tuple[Optiona
     bbox = tuple(int(v) for v in source_face.bbox)
     embedding = getattr(source_face, "embedding", None)
     detection_score = float(getattr(source_face, "det_score", 0.0) or 0.0)
-    has_landmarks = bool(getattr(source_face, "kps", None) is not None)
+    kps = getattr(source_face, "kps", None)
+    landmarks_106 = getattr(source_face, "landmark_2d_106", None)
+    has_landmarks = bool(kps is not None or landmarks_106 is not None)
     profile = SourceFaceProfile(
         face=source_face,
         image=avatar,
         normalized_image=normalize_avatar(avatar),
         bbox=bbox,
+        kps=np.array(kps) if kps is not None else None,
+        landmarks_106=np.array(landmarks_106) if landmarks_106 is not None else None,
         has_landmarks=has_landmarks,
         embedding=np.array(embedding) if embedding is not None else None,
         detection_score=detection_score,

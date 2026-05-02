@@ -1,4 +1,5 @@
 import os
+from types import SimpleNamespace
 from typing import Optional
 
 import numpy as np
@@ -7,6 +8,7 @@ from pipeline.analyser import build_source_face, select_primary_face
 from pipeline.compositor import apply_style, apply_watermark, blend_face_region
 from pipeline.types import SourceFaceProfile, SwapResult
 from runtime.provider_config import create_face_analysis, create_swapper, cuda_available, insightface
+from pipeline.masking import get_face_bounds
 
 
 class FaceSwapPipeline:
@@ -20,6 +22,10 @@ class FaceSwapPipeline:
         self.mouth_restore_enabled = os.getenv("MOUTH_PRESERVE_ENABLED", "true").lower() not in ("0", "false", "no")
         self.mouth_mask_scale = float(os.getenv("MOUTH_MASK_SCALE", "1.05"))
         self.mouth_mask_y_offset = float(os.getenv("MOUTH_MASK_Y_OFFSET", "0.0"))
+        self.color_match_strength = float(os.getenv("FACE_COLOR_MATCH_STRENGTH", "0.6"))
+        self.poisson_blend_enabled = os.getenv("POISSON_BLEND_ENABLED", "false").lower() in ("1", "true", "yes")
+        self.swap_roi_expand_x = float(os.getenv("SWAP_ROI_EXPAND_X", "0.35"))
+        self.swap_roi_expand_y = float(os.getenv("SWAP_ROI_EXPAND_Y", "0.4"))
         self.face_app = None
         self.swapper = None
         self.source_profile: Optional[SourceFaceProfile] = None
@@ -60,6 +66,8 @@ class FaceSwapPipeline:
                         self.mouth_restore_enabled,
                         self.mouth_mask_scale,
                         self.mouth_mask_y_offset,
+                        self.color_match_strength,
+                        self.poisson_blend_enabled,
                     )
             except Exception as exc:
                 self.status = f"swap-failed:{exc}"
@@ -83,5 +91,45 @@ class FaceSwapPipeline:
         }
 
     def _swap_face(self, frame: np.ndarray, target_face) -> SwapResult:
-        swapped_frame = self.swapper.get(frame.copy(), target_face, self.source_profile.face, paste_back=True)
-        return SwapResult(frame=frame, face=target_face, swapped_frame=swapped_frame, source_profile=self.source_profile)
+        x0, y0, x1, y1 = get_face_bounds(
+            frame.shape[:2],
+            target_face,
+            expand_x=self.swap_roi_expand_x,
+            expand_y=self.swap_roi_expand_y,
+        )
+        roi = frame[y0:y1, x0:x1].copy()
+        local_face = self._create_local_face(target_face, x0, y0)
+        swapped_roi = self.swapper.get(roi.copy(), local_face, self.source_profile.face, paste_back=True)
+        swapped_frame = frame.copy()
+        swapped_frame[y0:y1, x0:x1] = swapped_roi
+        return SwapResult(
+            frame=frame,
+            face=target_face,
+            swapped_frame=swapped_frame,
+            source_profile=self.source_profile,
+            roi_bounds=(x0, y0, x1, y1),
+        )
+
+    @staticmethod
+    def _create_local_face(face, offset_x: int, offset_y: int):
+        local_face = SimpleNamespace()
+
+        try:
+            items = vars(face).items()
+        except TypeError:
+            items = ()
+
+        for attr, value in items:
+            setattr(local_face, attr, value)
+
+        local_face.bbox = np.array(face.bbox, dtype=np.float32) - np.array([offset_x, offset_y, offset_x, offset_y], dtype=np.float32)
+
+        if hasattr(face, "kps") and face.kps is not None:
+            local_face.kps = np.array(face.kps, dtype=np.float32) - np.array([offset_x, offset_y], dtype=np.float32)
+
+        if hasattr(face, "landmark_2d_106") and face.landmark_2d_106 is not None:
+            local_face.landmark_2d_106 = np.array(face.landmark_2d_106, dtype=np.float32) - np.array(
+                [offset_x, offset_y], dtype=np.float32
+            )
+
+        return local_face
