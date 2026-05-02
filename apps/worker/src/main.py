@@ -10,7 +10,7 @@ import av
 import cv2
 import numpy as np
 from aiohttp import ClientSession, WSMsgType, web
-from aiortc import MediaStreamTrack, RTCPeerConnection, RTCSessionDescription
+from aiortc import MediaStreamTrack, RTCPeerConnection, RTCSessionDescription, RTCConfiguration, RTCIceServer
 from aiortc.sdp import candidate_from_sdp
 from aiortc.contrib.media import MediaRelay
 
@@ -243,6 +243,9 @@ class BlackVideoTrack(MediaStreamTrack):
 
 
 state = WorkerState()
+peer_connection_config = RTCConfiguration(
+    iceServers=[RTCIceServer(urls=[os.getenv("STUN_URL", "stun:stun.l.google.com:19302")])]
+)
 
 
 async def health(_: web.Request):
@@ -315,7 +318,7 @@ async def webrtc_offer(req: web.Request):
 
 
 def create_peer_connection(peer_id: str, prime_source_sender: bool = False) -> RTCPeerConnection:
-    pc = RTCPeerConnection()
+    pc = RTCPeerConnection(configuration=peer_connection_config)
     state.pcs.add(pc)
 
     source_sender = None
