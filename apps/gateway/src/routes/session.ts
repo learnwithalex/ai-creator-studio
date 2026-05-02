@@ -57,7 +57,13 @@ export async function sessionRoutes(app: FastifyInstance) {
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify(payload)
           }).catch(() => null);
-          return Boolean(reserveResponse?.ok);
+          if (!reserveResponse?.ok) return { ok: false };
+          const reserveBody = (await reserveResponse.json().catch(() => ({}))) as {
+            pipelineStatus?: string;
+            avatarStatus?: string;
+            usesCuda?: boolean;
+          };
+          return { ok: true, ...reserveBody };
         }
       },
       {
@@ -88,7 +94,13 @@ export async function sessionRoutes(app: FastifyInstance) {
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify(payload)
               }).catch(() => null);
-              return Boolean(reserveResponse?.ok);
+              if (!reserveResponse?.ok) return { ok: false };
+              const reserveBody = (await reserveResponse.json().catch(() => ({}))) as {
+                pipelineStatus?: string;
+                avatarStatus?: string;
+                usesCuda?: boolean;
+              };
+              return { ok: true, ...reserveBody };
             }
           },
           {

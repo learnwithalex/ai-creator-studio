@@ -13,6 +13,9 @@ export interface SessionStartResponse {
   obsUrl: string;
   previewOfferUrl: string;
   previewWsUrl: string;
+  pipelineStatus: string;
+  avatarStatus: string;
+  usesCuda: boolean;
   workerId: string;
   expiresAt: string;
 }

@@ -20,7 +20,7 @@ export type StartSessionDeps = {
   workerReserve: (
     endpoint: string,
     payload: { sessionId: string; signalingUrl: string; signalingToken: string; style?: string; avatarDataUrl?: string }
-  ) => Promise<boolean>;
+  ) => Promise<{ ok: boolean; pipelineStatus?: string; avatarStatus?: string; usesCuda?: boolean }>;
 };
 
 export type StopSessionDeps = {
@@ -70,6 +70,9 @@ export async function runStartSessionWorkflow(
         obsUrl: string;
         previewOfferUrl: string;
         previewWsUrl: string;
+        pipelineStatus: string;
+        avatarStatus: string;
+        usesCuda: boolean;
         workerId: string;
         expiresAt: string;
       };
@@ -96,7 +99,7 @@ export async function runStartSessionWorkflow(
     style: params.style,
     avatarDataUrl: params.avatarDataUrl
   });
-  if (!reserved) {
+  if (!reserved.ok) {
     await deps.releaseWorker(worker.workerId);
     await deps.releaseReservedCredits(params.userId, params.startupReserveCredits);
     return { ok: false, statusCode: 503, error: "WORKER_RESERVE_FAILED" };
@@ -121,6 +124,9 @@ export async function runStartSessionWorkflow(
       obsUrl: `${params.obsBaseUrl}/studio/obs/${sessionId}?token=${obsToken}&signalingUrl=${encodeURIComponent(params.browserSignalingUrl)}`,
       previewOfferUrl: `${worker.endpoint}/webrtc/offer`,
       previewWsUrl: `${worker.endpoint.replace(/^http/i, "ws")}/preview?sessionId=${encodeURIComponent(sessionId)}`,
+      pipelineStatus: reserved.pipelineStatus ?? "unknown",
+      avatarStatus: reserved.avatarStatus ?? "unknown",
+      usesCuda: reserved.usesCuda ?? false,
       workerId: worker.workerId,
       expiresAt: new Date(Date.now() + 30 * 60_000).toISOString()
     }

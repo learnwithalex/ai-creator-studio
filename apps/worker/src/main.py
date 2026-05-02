@@ -19,50 +19,60 @@ try:
 except Exception:
     ort = None
 
+try:
+    import insightface
+except Exception:
+    insightface = None
+
 
 class FaceSwapPipeline:
     def __init__(self):
         self.model_path = os.getenv("SWAP_MODEL_PATH", "models/inswapper_128.onnx")
-        self.session = None
-        self.input_name = None
-        self.output_name = None
-        self.input_shape = None
-        self.input_defs = []
-        self.can_run_image_path = False
-        if ort and os.path.exists(self.model_path):
-            providers = ["CUDAExecutionProvider", "CPUExecutionProvider"]
-            self.session = ort.InferenceSession(self.model_path, providers=providers)
-            inputs = self.session.get_inputs()
-            outputs = self.session.get_outputs()
-            if inputs and outputs:
-                self.input_defs = inputs
-                self.input_name = inputs[0].name
-                self.input_shape = inputs[0].shape
-                self.output_name = outputs[0].name
-                self.can_run_image_path = True
-        self.face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
-        self.avatar_face: Optional[np.ndarray] = None
+        self.model_root = os.getenv("INSIGHTFACE_MODEL_ROOT", os.path.expanduser("~/.insightface/models"))
+        self.det_size = int(os.getenv("FACE_DET_SIZE", "320"))
+        self.providers = ["CUDAExecutionProvider", "CPUExecutionProvider"]
+        self.face_app = None
+        self.swapper = None
+        self.source_face = None
+        self.status = "uninitialized"
+        self.avatar_status = "missing"
+        self.using_cuda = False
 
-    def process(self, image: np.ndarray) -> np.ndarray:
+        if insightface is None:
+            self.status = "insightface-missing"
+            return
+
+        try:
+            self.using_cuda = bool(ort and "CUDAExecutionProvider" in ort.get_available_providers())
+            ctx_id = 0 if self.using_cuda else -1
+            self.face_app = insightface.app.FaceAnalysis(name="buffalo_l", root=self.model_root, providers=self.providers)
+            self.face_app.prepare(ctx_id=ctx_id, det_size=(self.det_size, self.det_size))
+            self.swapper = insightface.model_zoo.get_model(self.model_path, providers=self.providers)
+            self.status = "ready-cuda" if self.using_cuda else "ready-cpu"
+        except Exception as exc:
+            self.status = f"init-failed:{exc}"
+            self.face_app = None
+            self.swapper = None
+
+    def process(self, image: np.ndarray, style: str = "default") -> np.ndarray:
         output = image.copy()
-        gray = cv2.cvtColor(output, cv2.COLOR_BGR2GRAY)
-        faces = self.face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(40, 40))
-        for (x, y, w, h) in faces:
-            roi = output[y : y + h, x : x + w]
-            swapped = self._apply_avatar_face(roi)
-            if swapped is None:
-                swapped = self._run_onnx_face_path(roi)
-            if swapped is not None:
-                output[y : y + h, x : x + w] = swapped
-            else:
-                cv2.rectangle(output, (x, y), (x + w, y + h), (40, 200, 120), 2)
-                cv2.putText(output, "AI", (x, max(20, y - 8)), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (40, 200, 120), 2)
+        if self.face_app is not None and self.swapper is not None and self.source_face is not None:
+            try:
+                faces = self.face_app.get(output)
+                if faces:
+                    target_face = max(faces, key=self._face_area)
+                    output = self.swapper.get(output, target_face, self.source_face, paste_back=True)
+            except Exception as exc:
+                self.status = f"swap-failed:{exc}"
+
+        output = self._apply_style(output, style)
         cv2.putText(output, "AI CREATOR STUDIO", (20, output.shape[0] - 20), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
         return output
 
     def set_avatar_from_data_url(self, avatar_data_url: Optional[str]):
-        if not avatar_data_url:
-            self.avatar_face = None
+        self.source_face = None
+        if not avatar_data_url or self.face_app is None:
+            self.avatar_status = "missing"
             return
         try:
             if "," in avatar_data_url:
@@ -73,105 +83,52 @@ class FaceSwapPipeline:
             buffer = np.frombuffer(decoded, dtype=np.uint8)
             avatar = cv2.imdecode(buffer, cv2.IMREAD_COLOR)
             if avatar is None:
-                self.avatar_face = None
+                self.avatar_status = "decode-failed"
                 return
-            extracted = self._extract_primary_face(avatar)
-            self.avatar_face = extracted if extracted is not None else avatar
-        except Exception:
-            self.avatar_face = None
+            faces = self.face_app.get(self._normalize_avatar(avatar))
+            if faces:
+                self.source_face = max(faces, key=self._face_area)
+                self.avatar_status = "ready"
+            else:
+                self.avatar_status = "no-face-detected"
+        except Exception as exc:
+            self.avatar_status = f"avatar-failed:{exc}"
 
-    def _run_onnx_face_path(self, roi: np.ndarray):
-        if self.session is None or not self.can_run_image_path:
-            return None
-        try:
-            input_h, input_w = 128, 128
-            if self.input_shape and len(self.input_shape) >= 4:
-                if isinstance(self.input_shape[2], int):
-                    input_h = self.input_shape[2]
-                if isinstance(self.input_shape[3], int):
-                    input_w = self.input_shape[3]
+    def snapshot(self) -> dict:
+        return {
+            "pipelineStatus": self.status,
+            "avatarStatus": self.avatar_status,
+            "usesCuda": self.using_cuda,
+            "hasSourceFace": self.source_face is not None,
+        }
 
-            resized = cv2.resize(roi, (input_w, input_h), interpolation=cv2.INTER_AREA)
-            tensor = resized.astype(np.float32) / 255.0
-            tensor = np.transpose(tensor, (2, 0, 1))
-            tensor = np.expand_dims(tensor, axis=0)
+    @staticmethod
+    def _face_area(face) -> int:
+        return int(max(0, face.bbox[2] - face.bbox[0])) * int(max(0, face.bbox[3] - face.bbox[1]))
 
-            feed = {self.input_name: tensor}
-            for extra_input in self.input_defs[1:]:
-                resolved_shape = []
-                for dim in extra_input.shape:
-                    if isinstance(dim, int):
-                        resolved_shape.append(max(1, dim))
-                    else:
-                        resolved_shape.append(1)
-                feed[extra_input.name] = np.zeros(tuple(resolved_shape), dtype=np.float32)
+    @staticmethod
+    def _normalize_avatar(image: np.ndarray) -> np.ndarray:
+        height, width = image.shape[:2]
+        longest_edge = max(height, width)
+        if longest_edge <= 1024:
+            return image
+        scale = 1024.0 / float(longest_edge)
+        return cv2.resize(image, (max(1, int(width * scale)), max(1, int(height * scale))), interpolation=cv2.INTER_AREA)
 
-            outputs = self.session.run([self.output_name] if self.output_name else None, feed)
-            if not outputs:
-                return None
-            face = outputs[0]
-            if isinstance(face, list):
-                face = np.array(face)
-            if face.ndim == 4:
-                face = face[0]
-            if face.ndim == 3 and face.shape[0] in (1, 3):
-                face = np.transpose(face, (1, 2, 0))
-            if face.ndim != 3:
-                return None
-
-            face = face.astype(np.float32)
-            min_val = float(face.min())
-            max_val = float(face.max())
-            if min_val < 0:
-                face = (face + 1.0) / 2.0
-            if max_val > 1.0:
-                face = np.clip(face / 255.0, 0.0, 1.0)
-            face = (np.clip(face, 0.0, 1.0) * 255.0).astype(np.uint8)
-            if face.shape[2] == 1:
-                face = cv2.cvtColor(face, cv2.COLOR_GRAY2BGR)
-
-            face = cv2.resize(face, (roi.shape[1], roi.shape[0]), interpolation=cv2.INTER_LINEAR)
-            blended = cv2.addWeighted(roi, 0.15, face, 0.85, 0.0)
-            return blended
-        except Exception:
-            return None
-
-    def _extract_primary_face(self, image: np.ndarray):
-        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-        faces = self.face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(40, 40))
-        if len(faces) == 0:
-            return None
-        x, y, w, h = max(faces, key=lambda f: int(f[2] * f[3]))
-        pad_w = int(w * 0.25)
-        pad_h = int(h * 0.25)
-        x0 = max(0, x - pad_w)
-        y0 = max(0, y - pad_h)
-        x1 = min(image.shape[1], x + w + pad_w)
-        y1 = min(image.shape[0], y + h + pad_h)
-        if x1 <= x0 or y1 <= y0:
-            return None
-        return image[y0:y1, x0:x1]
-
-    def _apply_avatar_face(self, roi: np.ndarray):
-        if self.avatar_face is None:
-            return None
-        try:
-            h, w = roi.shape[:2]
-            avatar = cv2.resize(self.avatar_face, (w, h), interpolation=cv2.INTER_AREA).astype(np.float32)
-            target = roi.astype(np.float32)
-
-            avatar_mean = avatar.mean(axis=(0, 1), keepdims=True)
-            target_mean = target.mean(axis=(0, 1), keepdims=True)
-            color_matched = np.clip(avatar - avatar_mean + target_mean, 0, 255)
-
-            mask = np.zeros((h, w), dtype=np.uint8)
-            cv2.ellipse(mask, (w // 2, h // 2), (max(4, int(w * 0.42)), max(4, int(h * 0.48))), 0, 0, 360, 255, -1)
-            mask = cv2.GaussianBlur(mask, (31, 31), 0)
-            alpha = (mask.astype(np.float32) / 255.0)[..., np.newaxis]
-            blended = (color_matched * alpha) + (target * (1.0 - alpha))
-            return np.clip(blended, 0, 255).astype(np.uint8)
-        except Exception:
-            return None
+    @staticmethod
+    def _apply_style(image: np.ndarray, style: str) -> np.ndarray:
+        if style == "cinematic":
+            graded = cv2.convertScaleAbs(image, alpha=1.08, beta=-6)
+            shadow = np.zeros_like(graded)
+            cv2.rectangle(shadow, (0, 0), (graded.shape[1], graded.shape[0]), (8, 18, 38), thickness=-1)
+            return cv2.addWeighted(graded, 0.92, shadow, 0.08, 0)
+        if style == "anime":
+            smooth = cv2.bilateralFilter(image, 7, 60, 60)
+            edges = cv2.Canny(smooth, 80, 160)
+            edges = cv2.cvtColor(edges, cv2.COLOR_GRAY2BGR)
+            poster = cv2.convertScaleAbs(smooth, alpha=1.18, beta=10)
+            return cv2.subtract(poster, edges // 3)
+        return image
 
 
 class WorkerState:
@@ -217,7 +174,7 @@ class VideoTransformTrack(MediaStreamTrack):
             image = cv2.resize(image, (int(width * scale), 720), interpolation=cv2.INTER_AREA)
 
         if self.state.should_process():
-            image = self.state.pipeline.process(image)
+            image = self.state.pipeline.process(image, self.state.style)
 
         new_frame = av.VideoFrame.from_ndarray(image, format="bgr24")
         new_frame.pts = frame.pts
@@ -249,7 +206,15 @@ peer_connection_config = RTCConfiguration(
 
 
 async def health(_: web.Request):
-    return web.json_response({"ok": True, "ready": state.ready, "sessionId": state.session_id, "activePeerConnections": len(state.pcs)})
+    return web.json_response(
+        {
+            "ok": True,
+            "ready": state.ready,
+            "sessionId": state.session_id,
+            "activePeerConnections": len(state.pcs),
+            **state.pipeline.snapshot(),
+        }
+    )
 
 
 async def reserve(req: web.Request):
@@ -275,7 +240,7 @@ async def reserve(req: web.Request):
         state.signaling_task = asyncio.create_task(
             signaling_worker_loop(state.session_id, state.signaling_url, state.signaling_token)
         )
-    return web.json_response({"ok": True, "workerId": os.getenv("WORKER_ID", "worker-1")})
+    return web.json_response({"ok": True, "workerId": os.getenv("WORKER_ID", "worker-1"), **state.pipeline.snapshot()})
 
 
 async def release(_: web.Request):
@@ -308,7 +273,7 @@ async def preview_socket(req: web.Request):
                 image = cv2.imdecode(buffer, cv2.IMREAD_COLOR)
                 if image is None:
                     continue
-                processed = state.pipeline.process(image)
+                processed = state.pipeline.process(image, state.style)
                 ok, encoded = cv2.imencode(".jpg", processed, [int(cv2.IMWRITE_JPEG_QUALITY), 80])
                 if ok:
                     await ws.send_bytes(encoded.tobytes())

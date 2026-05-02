@@ -14,6 +14,9 @@ export function StudioClient() {
   const [style, setStyle] = useState<string>("default");
   const [avatarDataUrl, setAvatarDataUrl] = useState<string>("");
   const [avatarFileName, setAvatarFileName] = useState<string>("");
+  const [pipelineStatus, setPipelineStatus] = useState<string>("unknown");
+  const [avatarStatus, setAvatarStatus] = useState<string>("missing");
+  const [runtimeLabel, setRuntimeLabel] = useState<string>("CPU");
   const cleanupRef = useRef<null | (() => void)>(null);
   const outputUrlRef = useRef<string>("");
 
@@ -32,6 +35,9 @@ export function StudioClient() {
     }).then((r) => r.json());
     setSessionId(started.sessionId);
     setObsUrl(started.obsUrl);
+    setPipelineStatus(started.pipelineStatus ?? "unknown");
+    setAvatarStatus(started.avatarStatus ?? "unknown");
+    setRuntimeLabel(started.usesCuda ? "CUDA" : "CPU");
     setStatus("warming-up");
 
     cleanupRef.current = await connectPreviewSocket(started.previewWsUrl, media, {
@@ -78,6 +84,8 @@ export function StudioClient() {
       <p>Status: {status}</p>
       <p>Credits: {credits}</p>
       <p>Session: {sessionId || "-"}</p>
+      <p>Pipeline: {pipelineStatus} ({runtimeLabel})</p>
+      <p>Avatar detection: {avatarStatus}</p>
       <label>
         Avatar upload:{" "}
         <input
