@@ -31,6 +31,10 @@ class FaceSwapPipeline:
         self.model_root = os.getenv("INSIGHTFACE_MODEL_ROOT", os.path.expanduser("~/.insightface/models"))
         self.det_size = int(os.getenv("FACE_DET_SIZE", "320"))
         self.providers = ["CUDAExecutionProvider", "CPUExecutionProvider"]
+        self.blend_strength = float(os.getenv("FACE_BLEND_STRENGTH", "0.92"))
+        self.mask_blur = int(os.getenv("FACE_MASK_BLUR", "41"))
+        self.mask_expand_x = float(os.getenv("FACE_MASK_EXPAND_X", "0.18"))
+        self.mask_expand_y = float(os.getenv("FACE_MASK_EXPAND_Y", "0.28"))
         self.face_app = None
         self.swapper = None
         self.source_face = None
@@ -61,7 +65,8 @@ class FaceSwapPipeline:
                 faces = self.face_app.get(output)
                 if faces:
                     target_face = max(faces, key=self._face_area)
-                    output = self.swapper.get(output, target_face, self.source_face, paste_back=True)
+                    swapped = self.swapper.get(output.copy(), target_face, self.source_face, paste_back=True)
+                    output = self._blend_face_region(output, swapped, target_face)
             except Exception as exc:
                 self.status = f"swap-failed:{exc}"
 
@@ -102,6 +107,61 @@ class FaceSwapPipeline:
             "hasSourceFace": self.source_face is not None,
         }
 
+    def _blend_face_region(self, original: np.ndarray, swapped: np.ndarray, face) -> np.ndarray:
+        mask = self._build_face_mask(original.shape[:2], face)
+        matched = self._match_face_lighting(original, swapped, face)
+        alpha = (mask.astype(np.float32) / 255.0)[..., np.newaxis] * self.blend_strength
+        blended = (matched.astype(np.float32) * alpha) + (original.astype(np.float32) * (1.0 - alpha))
+        return np.clip(blended, 0, 255).astype(np.uint8)
+
+    def _build_face_mask(self, image_shape: tuple[int, int], face) -> np.ndarray:
+        height, width = image_shape
+        mask = np.zeros((height, width), dtype=np.uint8)
+        x0, y0, x1, y1 = [int(v) for v in face.bbox]
+        face_width = max(1, x1 - x0)
+        face_height = max(1, y1 - y0)
+
+        center_x = int((x0 + x1) / 2)
+        center_y = int((y0 + y1) / 2)
+        axis_x = max(10, int(face_width * (0.5 + self.mask_expand_x)))
+        axis_y = max(10, int(face_height * (0.58 + self.mask_expand_y)))
+
+        if hasattr(face, "kps") and face.kps is not None:
+            keypoints = np.array(face.kps, dtype=np.int32)
+            hull = cv2.convexHull(keypoints)
+            cv2.fillConvexPoly(mask, hull, 255)
+            cv2.ellipse(mask, (center_x, center_y), (axis_x, axis_y), 0, 0, 360, 255, -1)
+        else:
+            cv2.ellipse(mask, (center_x, center_y), (axis_x, axis_y), 0, 0, 360, 255, -1)
+
+        blur_size = self.mask_blur if self.mask_blur % 2 == 1 else self.mask_blur + 1
+        return cv2.GaussianBlur(mask, (blur_size, blur_size), 0)
+
+    @staticmethod
+    def _match_face_lighting(original: np.ndarray, swapped: np.ndarray, face) -> np.ndarray:
+        x0, y0, x1, y1 = [int(v) for v in face.bbox]
+        height, width = original.shape[:2]
+        x0 = max(0, x0)
+        y0 = max(0, y0)
+        x1 = min(width, x1)
+        y1 = min(height, y1)
+        if x1 <= x0 or y1 <= y0:
+            return swapped
+
+        corrected = swapped.copy()
+        original_roi = original[y0:y1, x0:x1]
+        swapped_roi = corrected[y0:y1, x0:x1]
+
+        original_lab = cv2.cvtColor(original_roi, cv2.COLOR_BGR2LAB).astype(np.float32)
+        swapped_lab = cv2.cvtColor(swapped_roi, cv2.COLOR_BGR2LAB).astype(np.float32)
+
+        original_mean = original_lab.reshape(-1, 3).mean(axis=0)
+        swapped_mean = swapped_lab.reshape(-1, 3).mean(axis=0)
+        adjusted_lab = np.clip(swapped_lab + (original_mean - swapped_mean) * 0.6, 0, 255).astype(np.uint8)
+
+        corrected[y0:y1, x0:x1] = cv2.cvtColor(adjusted_lab, cv2.COLOR_LAB2BGR)
+        return corrected
+
     @staticmethod
     def _face_area(face) -> int:
         return int(max(0, face.bbox[2] - face.bbox[0])) * int(max(0, face.bbox[3] - face.bbox[1]))
@@ -136,6 +196,7 @@ class WorkerState:
         self.ready = True
         self.last_frame_ts = 0.0
         self.target_fps = int(os.getenv("TARGET_FPS", "12"))
+        self.preview_jpeg_quality = int(os.getenv("PREVIEW_JPEG_QUALITY", "72"))
         self.session_id: Optional[str] = None
         self.signaling_url: Optional[str] = None
         self.signaling_token: Optional[str] = None
@@ -146,6 +207,7 @@ class WorkerState:
         self.relay = MediaRelay()
         self.source_peer_id: Optional[str] = None
         self.source_output_track: Optional[MediaStreamTrack] = None
+        self.last_preview_bytes: Optional[bytes] = None
 
     def should_process(self) -> bool:
         min_gap = 1.0 / float(self.target_fps)
@@ -254,6 +316,7 @@ async def release(_: web.Request):
     state.pcs.clear()
     state.source_peer_id = None
     state.source_output_track = None
+    state.last_preview_bytes = None
     return web.json_response({"ok": True})
 
 
@@ -273,10 +336,15 @@ async def preview_socket(req: web.Request):
                 image = cv2.imdecode(buffer, cv2.IMREAD_COLOR)
                 if image is None:
                     continue
+                if not state.should_process() and state.last_preview_bytes is not None:
+                    await ws.send_bytes(state.last_preview_bytes)
+                    continue
+
                 processed = state.pipeline.process(image, state.style)
-                ok, encoded = cv2.imencode(".jpg", processed, [int(cv2.IMWRITE_JPEG_QUALITY), 80])
+                ok, encoded = cv2.imencode(".jpg", processed, [int(cv2.IMWRITE_JPEG_QUALITY), state.preview_jpeg_quality])
                 if ok:
-                    await ws.send_bytes(encoded.tobytes())
+                    state.last_preview_bytes = encoded.tobytes()
+                    await ws.send_bytes(state.last_preview_bytes)
             elif message.type == WSMsgType.ERROR:
                 break
     finally:

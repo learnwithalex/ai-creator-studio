@@ -3,6 +3,9 @@
 import { useRef, useState } from "react";
 
 const gatewayBase = process.env.NEXT_PUBLIC_GATEWAY_URL ?? "http://localhost:4000";
+const previewMaxWidth = Number(process.env.NEXT_PUBLIC_PREVIEW_MAX_WIDTH ?? 512);
+const previewJpegQuality = Number(process.env.NEXT_PUBLIC_PREVIEW_JPEG_QUALITY ?? 0.68);
+const previewFrameDelayMs = Number(process.env.NEXT_PUBLIC_PREVIEW_FRAME_DELAY_MS ?? 75);
 
 export function StudioClient() {
   const inputRef = useRef<HTMLVideoElement>(null);
@@ -142,37 +145,46 @@ async function connectPreviewSocket(
 
   let stopped = false;
   let sendTimer: number | null = null;
-  let isSending = false;
+  let isEncoding = false;
+  let frameInFlight = false;
 
   const sendFrame = async () => {
-    if (stopped || isSending || ws.readyState !== WebSocket.OPEN) return;
+    if (stopped || isEncoding || frameInFlight || ws.readyState !== WebSocket.OPEN) return;
     if (!video.videoWidth || !video.videoHeight) return;
-    isSending = true;
+    isEncoding = true;
     try {
-      const maxWidth = 640;
-      const scale = Math.min(1, maxWidth / video.videoWidth);
+      const scale = Math.min(1, previewMaxWidth / video.videoWidth);
       canvas.width = Math.max(1, Math.round(video.videoWidth * scale));
       canvas.height = Math.max(1, Math.round(video.videoHeight * scale));
       context.drawImage(video, 0, 0, canvas.width, canvas.height);
-      const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, "image/jpeg", 0.75));
+      const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, "image/jpeg", previewJpegQuality));
       if (blob && ws.readyState === WebSocket.OPEN) {
+        frameInFlight = true;
         ws.send(await blob.arrayBuffer());
       }
     } finally {
-      isSending = false;
+      isEncoding = false;
     }
+  };
+
+  const scheduleNextFrame = () => {
+    if (stopped) return;
+    if (sendTimer !== null) window.clearTimeout(sendTimer);
+    sendTimer = window.setTimeout(() => void sendFrame(), previewFrameDelayMs);
   };
 
   ws.onopen = () => {
     handlers.onStatus("streaming-preview");
-    sendTimer = window.setInterval(() => void sendFrame(), 120);
+    void sendFrame();
   };
 
   ws.onmessage = (event) => {
+    frameInFlight = false;
     const data = event.data;
     if (typeof data === "string") return;
     const blob = data instanceof Blob ? data : new Blob([data], { type: "image/jpeg" });
     handlers.onFrame(URL.createObjectURL(blob));
+    scheduleNextFrame();
   };
 
   ws.onerror = () => {
@@ -185,7 +197,7 @@ async function connectPreviewSocket(
 
   return () => {
     stopped = true;
-    if (sendTimer !== null) window.clearInterval(sendTimer);
+    if (sendTimer !== null) window.clearTimeout(sendTimer);
     ws.close();
     video.pause();
     video.srcObject = null;
