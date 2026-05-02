@@ -78,6 +78,7 @@ describe("session workflow", () => {
     expect(result.data.signalingUrl).toBe("ws://localhost:4001/ws");
     expect(result.data.obsUrl).toContain("/studio/obs/");
     expect(result.data.previewOfferUrl).toBe("http://worker:8000/webrtc/offer");
+    expect(result.data.previewWsUrl).toBe("ws://worker:8000/preview?sessionId=" + result.data.sessionId);
     expect(createSession).toHaveBeenCalledTimes(1);
   });
 

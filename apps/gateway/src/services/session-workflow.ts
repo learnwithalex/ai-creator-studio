@@ -69,6 +69,7 @@ export async function runStartSessionWorkflow(
         signalingToken: string;
         obsUrl: string;
         previewOfferUrl: string;
+        previewWsUrl: string;
         workerId: string;
         expiresAt: string;
       };
@@ -119,6 +120,7 @@ export async function runStartSessionWorkflow(
       signalingToken: browserToken,
       obsUrl: `${params.obsBaseUrl}/studio/obs/${sessionId}?token=${obsToken}&signalingUrl=${encodeURIComponent(params.browserSignalingUrl)}`,
       previewOfferUrl: `${worker.endpoint}/webrtc/offer`,
+      previewWsUrl: `${worker.endpoint.replace(/^http/i, "ws")}/preview?sessionId=${encodeURIComponent(sessionId)}`,
       workerId: worker.workerId,
       expiresAt: new Date(Date.now() + 30 * 60_000).toISOString()
     }

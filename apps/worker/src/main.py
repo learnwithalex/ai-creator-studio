@@ -292,6 +292,34 @@ async def release(_: web.Request):
     return web.json_response({"ok": True})
 
 
+async def preview_socket(req: web.Request):
+    session_id = req.query.get("sessionId")
+    if not session_id or session_id != state.session_id:
+        return web.Response(status=403, text="SESSION_MISMATCH")
+
+    ws = web.WebSocketResponse(max_msg_size=8 * 1024 * 1024)
+    await ws.prepare(req)
+    print("[worker] preview-connected", {"sessionId": session_id}, flush=True)
+
+    try:
+        async for message in ws:
+            if message.type == WSMsgType.BINARY:
+                buffer = np.frombuffer(message.data, dtype=np.uint8)
+                image = cv2.imdecode(buffer, cv2.IMREAD_COLOR)
+                if image is None:
+                    continue
+                processed = state.pipeline.process(image)
+                ok, encoded = cv2.imencode(".jpg", processed, [int(cv2.IMWRITE_JPEG_QUALITY), 80])
+                if ok:
+                    await ws.send_bytes(encoded.tobytes())
+            elif message.type == WSMsgType.ERROR:
+                break
+    finally:
+        print("[worker] preview-closed", {"sessionId": session_id}, flush=True)
+
+    return ws
+
+
 async def webrtc_offer(req: web.Request):
     try:
         body = await req.json()
@@ -480,6 +508,7 @@ async def run_worker_api():
     app.router.add_get("/health", health)
     app.router.add_post("/reserve", reserve)
     app.router.add_post("/release", release)
+    app.router.add_get("/preview", preview_socket)
     app.router.add_post("/webrtc/offer", webrtc_offer)
     app.router.add_options("/webrtc/offer", lambda _: web.Response(status=204))
     app.on_startup.append(on_startup)

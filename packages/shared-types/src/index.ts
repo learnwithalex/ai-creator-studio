@@ -12,6 +12,7 @@ export interface SessionStartResponse {
   signalingToken: string;
   obsUrl: string;
   previewOfferUrl: string;
+  previewWsUrl: string;
   workerId: string;
   expiresAt: string;
 }
