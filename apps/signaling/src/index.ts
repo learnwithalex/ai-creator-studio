@@ -3,13 +3,20 @@ import { parseSignalingMessage, validateJoinToken } from "./protocol";
 
 const secret = process.env.SESSION_TOKEN_SECRET ?? "dev-secret";
 const turns = [{ urls: process.env.TURN_URL ?? "turn:localhost:3478", username: process.env.TURN_USER ?? "demo", credential: process.env.TURN_PASS ?? "demo" }];
-const rooms = new Map<string, { browser?: WebSocket; worker?: WebSocket }>();
+type Room = {
+  worker?: WebSocket;
+  browser?: { peerId: string; socket: WebSocket };
+  viewers: Map<string, WebSocket>;
+};
+const rooms = new Map<string, Room>();
+let nextPeerId = 1;
 
 const wss = new WebSocketServer({ port: Number(process.env.PORT ?? 4001), path: "/ws" });
 
 wss.on("connection", (socket: WebSocket) => {
+  const connectionPeerId = `peer-${nextPeerId++}`;
   let sessionId = "";
-  let role: "browser" | "worker" | "" = "";
+  let role: "browser" | "worker" | "viewer" | "" = "";
   socket.on("message", (raw: Buffer) => {
     try {
       const msg = parseSignalingMessage(raw.toString());
@@ -17,16 +24,32 @@ wss.on("connection", (socket: WebSocket) => {
         validateJoinToken(msg, secret);
         sessionId = msg.sessionId;
         role = msg.role;
-        const room = rooms.get(sessionId) ?? {};
-        if (role === "browser" || role === "worker") room[role] = socket;
+        const room = rooms.get(sessionId) ?? { viewers: new Map<string, WebSocket>() };
+        if (role === "worker") room.worker = socket;
+        if (role === "browser") room.browser = { peerId: connectionPeerId, socket };
+        if (role === "viewer") room.viewers.set(connectionPeerId, socket);
         rooms.set(sessionId, room);
         socket.send(JSON.stringify({ type: "turn-config", sessionId, iceServers: turns }));
         return;
       }
       const room = rooms.get(msg.sessionId);
       if (!room) return;
-      const peer = role === "browser" ? room.worker : room.browser;
-      peer?.send(JSON.stringify(msg));
+      if (role === "worker") {
+        const targetPeerId = "peerId" in msg ? msg.peerId : undefined;
+        const browser = room.browser;
+        if (targetPeerId && browser && browser.peerId === targetPeerId) {
+          browser.socket.send(JSON.stringify(msg));
+          return;
+        }
+        if (targetPeerId && room.viewers.has(targetPeerId)) {
+          room.viewers.get(targetPeerId)?.send(JSON.stringify(msg));
+          return;
+        }
+        room.browser?.socket.send(JSON.stringify(msg));
+        return;
+      }
+
+      room.worker?.send(JSON.stringify({ ...msg, peerId: connectionPeerId }));
     } catch {
       socket.send(JSON.stringify({ type: "disconnect", reason: "invalid-message" }));
     }
@@ -35,8 +58,10 @@ wss.on("connection", (socket: WebSocket) => {
   socket.on("close", () => {
     const room = rooms.get(sessionId);
     if (!room) return;
-    if (role) delete room[role];
-    if (!room.browser && !room.worker) rooms.delete(sessionId);
+    if (role === "worker") delete room.worker;
+    if (role === "browser" && room.browser?.peerId === connectionPeerId) delete room.browser;
+    if (role === "viewer") room.viewers.delete(connectionPeerId);
+    if (!room.browser && !room.worker && room.viewers.size === 0) rooms.delete(sessionId);
   });
 });
 

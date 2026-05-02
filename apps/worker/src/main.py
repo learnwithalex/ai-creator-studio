@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import os
 import time
 from typing import Optional, Set
@@ -8,6 +9,7 @@ import cv2
 import numpy as np
 from aiohttp import ClientSession, WSMsgType, web
 from aiortc import MediaStreamTrack, RTCPeerConnection, RTCSessionDescription
+from aiortc.sdp import candidate_from_sdp
 
 try:
     import onnxruntime as ort
@@ -36,6 +38,7 @@ class FaceSwapPipeline:
                 self.output_name = outputs[0].name
                 self.can_run_image_path = True
         self.face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
+        self.avatar_face: Optional[np.ndarray] = None
 
     def process(self, image: np.ndarray) -> np.ndarray:
         output = image.copy()
@@ -43,7 +46,9 @@ class FaceSwapPipeline:
         faces = self.face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(40, 40))
         for (x, y, w, h) in faces:
             roi = output[y : y + h, x : x + w]
-            swapped = self._run_onnx_face_path(roi)
+            swapped = self._apply_avatar_face(roi)
+            if swapped is None:
+                swapped = self._run_onnx_face_path(roi)
             if swapped is not None:
                 output[y : y + h, x : x + w] = swapped
             else:
@@ -51,6 +56,26 @@ class FaceSwapPipeline:
                 cv2.putText(output, "AI", (x, max(20, y - 8)), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (40, 200, 120), 2)
         cv2.putText(output, "AI CREATOR STUDIO", (20, output.shape[0] - 20), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
         return output
+
+    def set_avatar_from_data_url(self, avatar_data_url: Optional[str]):
+        if not avatar_data_url:
+            self.avatar_face = None
+            return
+        try:
+            if "," in avatar_data_url:
+                _, encoded = avatar_data_url.split(",", 1)
+            else:
+                encoded = avatar_data_url
+            decoded = base64.b64decode(encoded)
+            buffer = np.frombuffer(decoded, dtype=np.uint8)
+            avatar = cv2.imdecode(buffer, cv2.IMREAD_COLOR)
+            if avatar is None:
+                self.avatar_face = None
+                return
+            extracted = self._extract_primary_face(avatar)
+            self.avatar_face = extracted if extracted is not None else avatar
+        except Exception:
+            self.avatar_face = None
 
     def _run_onnx_face_path(self, roi: np.ndarray):
         if self.session is None or not self.can_run_image_path:
@@ -108,6 +133,43 @@ class FaceSwapPipeline:
         except Exception:
             return None
 
+    def _extract_primary_face(self, image: np.ndarray):
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        faces = self.face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(40, 40))
+        if len(faces) == 0:
+            return None
+        x, y, w, h = max(faces, key=lambda f: int(f[2] * f[3]))
+        pad_w = int(w * 0.25)
+        pad_h = int(h * 0.25)
+        x0 = max(0, x - pad_w)
+        y0 = max(0, y - pad_h)
+        x1 = min(image.shape[1], x + w + pad_w)
+        y1 = min(image.shape[0], y + h + pad_h)
+        if x1 <= x0 or y1 <= y0:
+            return None
+        return image[y0:y1, x0:x1]
+
+    def _apply_avatar_face(self, roi: np.ndarray):
+        if self.avatar_face is None:
+            return None
+        try:
+            h, w = roi.shape[:2]
+            avatar = cv2.resize(self.avatar_face, (w, h), interpolation=cv2.INTER_AREA).astype(np.float32)
+            target = roi.astype(np.float32)
+
+            avatar_mean = avatar.mean(axis=(0, 1), keepdims=True)
+            target_mean = target.mean(axis=(0, 1), keepdims=True)
+            color_matched = np.clip(avatar - avatar_mean + target_mean, 0, 255)
+
+            mask = np.zeros((h, w), dtype=np.uint8)
+            cv2.ellipse(mask, (w // 2, h // 2), (max(4, int(w * 0.42)), max(4, int(h * 0.48))), 0, 0, 360, 255, -1)
+            mask = cv2.GaussianBlur(mask, (31, 31), 0)
+            alpha = (mask.astype(np.float32) / 255.0)[..., np.newaxis]
+            blended = (color_matched * alpha) + (target * (1.0 - alpha))
+            return np.clip(blended, 0, 255).astype(np.uint8)
+        except Exception:
+            return None
+
 
 class WorkerState:
     def __init__(self):
@@ -118,6 +180,7 @@ class WorkerState:
         self.signaling_url: Optional[str] = None
         self.signaling_token: Optional[str] = None
         self.signaling_task: Optional[asyncio.Task] = None
+        self.style: str = "default"
         self.pipeline = FaceSwapPipeline()
         self.pcs: Set[RTCPeerConnection] = set()
 
@@ -168,6 +231,8 @@ async def reserve(req: web.Request):
     state.session_id = body.get("sessionId")
     state.signaling_url = body.get("signalingUrl")
     state.signaling_token = body.get("signalingToken")
+    state.style = body.get("style", "default")
+    state.pipeline.set_avatar_from_data_url(body.get("avatarDataUrl"))
     if state.signaling_task:
         state.signaling_task.cancel()
     if state.session_id and state.signaling_url and state.signaling_token:
@@ -231,7 +296,7 @@ async def signaling_worker_loop(session_id: str, signaling_url: str, signaling_t
             async with ClientSession() as client:
                 async with client.ws_connect(signaling_url, heartbeat=20) as ws:
                     await ws.send_json({"type": "join", "sessionId": session_id, "role": "worker", "token": signaling_token})
-                    pc: Optional[RTCPeerConnection] = None
+                    peers: dict[str, RTCPeerConnection] = {}
 
                     async for message in ws:
                         if message.type != WSMsgType.TEXT:
@@ -240,7 +305,11 @@ async def signaling_worker_loop(session_id: str, signaling_url: str, signaling_t
                         msg_type = payload.get("type")
                         if msg_type == "offer":
                             sdp = payload.get("sdp", {})
+                            peer_id = payload.get("peerId") or "browser"
+                            if peer_id in peers:
+                                await peers[peer_id].close()
                             pc = create_peer_connection()
+                            peers[peer_id] = pc
                             await pc.setRemoteDescription(RTCSessionDescription(sdp=sdp["sdp"], type=sdp["type"]))
                             answer = await pc.createAnswer()
                             await pc.setLocalDescription(answer)
@@ -249,11 +318,21 @@ async def signaling_worker_loop(session_id: str, signaling_url: str, signaling_t
                                 {
                                     "type": "answer",
                                     "sessionId": session_id,
+                                    "peerId": peer_id,
                                     "sdp": {"type": pc.localDescription.type, "sdp": pc.localDescription.sdp},
                                 }
                             )
+                        elif msg_type == "ice-candidate":
+                            peer_id = payload.get("peerId") or "browser"
+                            candidate = payload.get("candidate")
+                            pc = peers.get(peer_id)
+                            if pc and candidate:
+                                cand = candidate_from_sdp(candidate.get("candidate", ""))
+                                cand.sdpMid = candidate.get("sdpMid")
+                                cand.sdpMLineIndex = candidate.get("sdpMLineIndex")
+                                await pc.addIceCandidate(cand)
                         elif msg_type == "disconnect":
-                            if pc:
+                            for pc in peers.values():
                                 await pc.close()
                             return
         except asyncio.CancelledError:

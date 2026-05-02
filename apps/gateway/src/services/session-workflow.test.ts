@@ -6,6 +6,7 @@ describe("session workflow", () => {
     const result = await runStartSessionWorkflow(
       {
         reserveCredits: vi.fn().mockResolvedValue(false),
+        releaseReservedCredits: vi.fn().mockResolvedValue(undefined),
         reserveWorker: vi.fn(),
         createSession: vi.fn(),
         releaseWorker: vi.fn(),
@@ -23,9 +24,11 @@ describe("session workflow", () => {
   });
 
   it("returns no worker when allocator returns null", async () => {
+    const releaseReservedCredits = vi.fn().mockResolvedValue(undefined);
     const result = await runStartSessionWorkflow(
       {
         reserveCredits: vi.fn().mockResolvedValue(true),
+        releaseReservedCredits,
         reserveWorker: vi.fn().mockResolvedValue(null),
         createSession: vi.fn(),
         releaseWorker: vi.fn(),
@@ -40,6 +43,7 @@ describe("session workflow", () => {
       }
     );
     expect(result).toEqual({ ok: false, statusCode: 503, error: "NO_WORKER_AVAILABLE" });
+    expect(releaseReservedCredits).toHaveBeenCalledWith("u1", 300);
   });
 
   it("creates session and returns signaling payload when worker reserve succeeds", async () => {
@@ -47,6 +51,7 @@ describe("session workflow", () => {
     const result = await runStartSessionWorkflow(
       {
         reserveCredits: vi.fn().mockResolvedValue(true),
+        releaseReservedCredits: vi.fn().mockResolvedValue(undefined),
         reserveWorker: vi.fn().mockResolvedValue({
           workerId: "w1",
           endpoint: "http://worker:8000",
@@ -74,9 +79,11 @@ describe("session workflow", () => {
 
   it("returns worker reserve failed and releases worker when worker reserve call fails", async () => {
     const releaseWorker = vi.fn().mockResolvedValue(undefined);
+    const releaseReservedCredits = vi.fn().mockResolvedValue(undefined);
     const result = await runStartSessionWorkflow(
       {
         reserveCredits: vi.fn().mockResolvedValue(true),
+        releaseReservedCredits,
         reserveWorker: vi.fn().mockResolvedValue({
           workerId: "w1",
           endpoint: "http://worker:8000",
@@ -96,6 +103,7 @@ describe("session workflow", () => {
     );
     expect(result).toEqual({ ok: false, statusCode: 503, error: "WORKER_RESERVE_FAILED" });
     expect(releaseWorker).toHaveBeenCalledWith("w1");
+    expect(releaseReservedCredits).toHaveBeenCalledWith("u1", 300);
   });
 
   it("returns session not found during stop flow", async () => {

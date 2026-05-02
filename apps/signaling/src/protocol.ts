@@ -1,7 +1,7 @@
 import jwt from "jsonwebtoken";
 import { z } from "zod";
 
-const RoleSchema = z.enum(["browser", "worker"]);
+const RoleSchema = z.enum(["browser", "worker", "viewer"]);
 
 const JoinSchema = z.object({
   type: z.literal("join"),
@@ -13,6 +13,7 @@ const JoinSchema = z.object({
 const OfferSchema = z.object({
   type: z.literal("offer"),
   sessionId: z.string().min(1),
+  peerId: z.string().min(1).optional(),
   sdp: z.object({
     type: z.string(),
     sdp: z.string()
@@ -22,6 +23,7 @@ const OfferSchema = z.object({
 const AnswerSchema = z.object({
   type: z.literal("answer"),
   sessionId: z.string().min(1),
+  peerId: z.string().min(1).optional(),
   sdp: z.object({
     type: z.string(),
     sdp: z.string()
@@ -31,6 +33,7 @@ const AnswerSchema = z.object({
 const IceSchema = z.object({
   type: z.literal("ice-candidate"),
   sessionId: z.string().min(1),
+  peerId: z.string().min(1).optional(),
   candidate: z.any()
 });
 
@@ -43,6 +46,7 @@ const PeerReadySchema = z.object({
 const DisconnectSchema = z.object({
   type: z.literal("disconnect"),
   sessionId: z.string().min(1),
+  peerId: z.string().min(1).optional(),
   role: RoleSchema
 });
 
@@ -66,10 +70,10 @@ export function parseSignalingMessage(raw: string): SignalingMessage {
 export function validateJoinToken(
   joinMessage: JoinMessage,
   secret: string
-): { sessionId: string; role: "browser" | "worker" } {
+): { sessionId: string; role: "browser" | "worker" | "viewer" } {
   const payload = jwt.verify(joinMessage.token, secret) as {
     sessionId?: string;
-    role?: "browser" | "worker";
+    role?: "browser" | "worker" | "viewer";
   };
   if (payload.sessionId !== joinMessage.sessionId || payload.role !== joinMessage.role) {
     throw new Error("TOKEN_PAYLOAD_MISMATCH");

@@ -77,3 +77,21 @@ export async function finalizeDebit(userId: string, actualAmount: number, reserv
   const redis = getRedis();
   if (redis) await redis.set(`wallet:${userId}`, JSON.stringify({ balanceCredits: updated.balanceCredits, reservedCredits: updated.reservedCredits }), "EX", 30).catch(() => undefined);
 }
+
+export async function releaseReservedCredits(userId: string, reservedAmount: number): Promise<void> {
+  const wallet = await ensureWallet(userId);
+  const nextWallet = {
+    balanceCredits: wallet.balanceCredits,
+    reservedCredits: Math.max(0, wallet.reservedCredits - reservedAmount)
+  };
+  if (useInMemory) {
+    memWallets.set(userId, nextWallet);
+    return;
+  }
+  const updated = await prisma.creditWallet.update({
+    where: { userId },
+    data: { reservedCredits: nextWallet.reservedCredits }
+  });
+  const redis = getRedis();
+  if (redis) await redis.set(`wallet:${userId}`, JSON.stringify({ balanceCredits: updated.balanceCredits, reservedCredits: updated.reservedCredits }), "EX", 30).catch(() => undefined);
+}

@@ -13,6 +13,10 @@ type Session = {
 };
 const memSessions = new Map<string, Session>();
 
+function isOpenStatus(status: Session["status"]): boolean {
+  return status === "starting" || status === "active";
+}
+
 export async function createSession(s: Session): Promise<Session> {
   if (useInMemory) {
     memSessions.set(s.sessionId, s);
@@ -76,4 +80,49 @@ export async function stopSession(sessionId: string): Promise<Session | undefine
   const redis = getRedis();
   if (redis) await redis.set(`session:${sessionId}`, JSON.stringify(current), "EX", 600).catch(() => undefined);
   return current;
+}
+
+export async function listOpenSessionsByUser(userId: string): Promise<Session[]> {
+  if (useInMemory) {
+    return Array.from(memSessions.values()).filter((session) => session.userId === userId && isOpenStatus(session.status));
+  }
+
+  const dbSessions = await prisma.session.findMany({
+    where: {
+      userId,
+      status: { in: ["starting", "active"] }
+    },
+    orderBy: { startedAt: "desc" }
+  });
+
+  return dbSessions.map((dbSession) => ({
+    sessionId: dbSession.id,
+    userId: dbSession.userId,
+    workerId: dbSession.workerId,
+    workerEndpoint: dbSession.workerEndpoint || undefined,
+    startedAt: dbSession.startedAt.getTime(),
+    reservedCredits: 300,
+    status: dbSession.status as Session["status"]
+  }));
+}
+
+export async function markSessionError(sessionId: string): Promise<void> {
+  const current = await getSession(sessionId);
+  if (!current) return;
+
+  current.status = "error";
+  if (useInMemory) {
+    memSessions.set(sessionId, current);
+    return;
+  }
+
+  await prisma.session.updateMany({
+    where: { id: sessionId },
+    data: {
+      status: "error",
+      endedAt: new Date()
+    }
+  });
+  const redis = getRedis();
+  if (redis) await redis.set(`session:${sessionId}`, JSON.stringify(current), "EX", 600).catch(() => undefined);
 }

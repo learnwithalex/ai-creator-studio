@@ -5,6 +5,7 @@ export type SessionStatus = "starting" | "active" | "stopped" | "error";
 
 export type StartSessionDeps = {
   reserveCredits: (userId: string, amount: number) => Promise<boolean>;
+  releaseReservedCredits: (userId: string, amount: number) => Promise<void>;
   reserveWorker: () => Promise<{ workerId: string; endpoint: string; gpuType: string } | null>;
   createSession: (payload: {
     sessionId: string;
@@ -16,7 +17,10 @@ export type StartSessionDeps = {
     status: SessionStatus;
   }) => Promise<unknown>;
   releaseWorker: (workerId: string) => Promise<void>;
-  workerReserve: (endpoint: string, payload: { sessionId: string; signalingUrl: string; signalingToken: string }) => Promise<boolean>;
+  workerReserve: (
+    endpoint: string,
+    payload: { sessionId: string; signalingUrl: string; signalingToken: string; style?: string; avatarDataUrl?: string }
+  ) => Promise<boolean>;
 };
 
 export type StopSessionDeps = {
@@ -42,6 +46,8 @@ export type StartSessionParams = {
   signalingUrl: string;
   obsBaseUrl: string;
   sessionTokenSecret: string;
+  style?: string;
+  avatarDataUrl?: string;
 };
 
 export type StopSessionParams = {
@@ -70,9 +76,29 @@ export async function runStartSessionWorkflow(
   if (!creditReserved) return { ok: false, statusCode: 402, error: "INSUFFICIENT_CREDITS" };
 
   const worker = await deps.reserveWorker();
-  if (!worker) return { ok: false, statusCode: 503, error: "NO_WORKER_AVAILABLE" };
+  if (!worker) {
+    await deps.releaseReservedCredits(params.userId, params.startupReserveCredits);
+    return { ok: false, statusCode: 503, error: "NO_WORKER_AVAILABLE" };
+  }
 
   const sessionId = randomUUID();
+  const browserToken = jwt.sign({ sessionId, role: "browser" }, params.sessionTokenSecret, { expiresIn: "30m" });
+  const workerToken = jwt.sign({ sessionId, role: "worker" }, params.sessionTokenSecret, { expiresIn: "30m" });
+  const obsToken = jwt.sign({ sessionId, role: "viewer" }, params.sessionTokenSecret, { expiresIn: "30m" });
+
+  const reserved = await deps.workerReserve(worker.endpoint, {
+    sessionId,
+    signalingUrl: params.signalingUrl,
+    signalingToken: workerToken,
+    style: params.style,
+    avatarDataUrl: params.avatarDataUrl
+  });
+  if (!reserved) {
+    await deps.releaseWorker(worker.workerId);
+    await deps.releaseReservedCredits(params.userId, params.startupReserveCredits);
+    return { ok: false, statusCode: 503, error: "WORKER_RESERVE_FAILED" };
+  }
+
   await deps.createSession({
     sessionId,
     userId: params.userId,
@@ -80,21 +106,8 @@ export async function runStartSessionWorkflow(
     workerEndpoint: worker.endpoint,
     startedAt: Date.now(),
     reservedCredits: params.startupReserveCredits,
-    status: "starting"
+    status: "active"
   });
-
-  const browserToken = jwt.sign({ sessionId, role: "browser" }, params.sessionTokenSecret, { expiresIn: "30m" });
-  const workerToken = jwt.sign({ sessionId, role: "worker" }, params.sessionTokenSecret, { expiresIn: "30m" });
-
-  const reserved = await deps.workerReserve(worker.endpoint, {
-    sessionId,
-    signalingUrl: params.signalingUrl,
-    signalingToken: workerToken
-  });
-  if (!reserved) {
-    await deps.releaseWorker(worker.workerId);
-    return { ok: false, statusCode: 503, error: "WORKER_RESERVE_FAILED" };
-  }
 
   return {
     ok: true,
@@ -102,7 +115,7 @@ export async function runStartSessionWorkflow(
       sessionId,
       signalingUrl: params.signalingUrl,
       signalingToken: browserToken,
-      obsUrl: `${params.obsBaseUrl}/studio/obs/${sessionId}?token=${browserToken}`,
+      obsUrl: `${params.obsBaseUrl}/studio/obs/${sessionId}?token=${obsToken}&signalingUrl=${encodeURIComponent(params.signalingUrl)}`,
       workerId: worker.workerId,
       expiresAt: new Date(Date.now() + 30 * 60_000).toISOString()
     }
