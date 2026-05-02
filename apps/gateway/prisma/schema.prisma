@@ -1,0 +1,65 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id           String            @id @default(cuid())
+  email        String            @unique
+  createdAt    DateTime          @default(now())
+  wallet       CreditWallet?
+  sessions     Session[]
+  transactions CreditTransaction[]
+}
+
+model Session {
+  id              String   @id @default(cuid())
+  userId          String
+  status          String
+  startedAt       DateTime
+  endedAt         DateTime?
+  consumedCredits Float    @default(0)
+  workerId        String
+  workerEndpoint  String?
+  obsToken        String
+  user            User     @relation(fields: [userId], references: [id])
+}
+
+model CreditWallet {
+  id              String  @id @default(cuid())
+  userId          String  @unique
+  balanceCredits  Float   @default(0)
+  reservedCredits Float   @default(0)
+  user            User    @relation(fields: [userId], references: [id])
+}
+
+model CreditTransaction {
+  id          String   @id @default(cuid())
+  userId      String
+  amount      Float
+  reason      String
+  createdAt   DateTime @default(now())
+  referenceId String?
+  user        User     @relation(fields: [userId], references: [id])
+}
+
+model SubscriptionPlan {
+  id            String  @id @default(cuid())
+  code          String  @unique
+  monthlyPrice  Float
+  monthlyCredits Float
+}
+
+model WorkerLease {
+  id         String   @id @default(cuid())
+  workerId   String   @unique
+  sessionId  String?
+  status     String
+  lastSeenAt DateTime @default(now())
+  endpoint   String
+  gpuType    String
+}

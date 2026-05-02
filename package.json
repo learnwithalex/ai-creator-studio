@@ -1,0 +1,23 @@
+{
+  "name": "ai-creator-studio",
+  "version": "0.1.0",
+  "private": true,
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "npm --prefix packages/shared-types run build && npm --prefix packages/webrtc-client run build && npm --prefix packages/ui run build && npm --prefix packages/config run build && npm --prefix apps/gateway run build && npm --prefix apps/signaling run build && npm --prefix apps/web run build",
+    "dev:web": "npm --prefix apps/web run dev",
+    "dev:gateway": "npm --prefix apps/gateway run dev",
+    "dev:signaling": "npm --prefix apps/signaling run dev",
+    "dev:worker": "python apps/worker/src/main.py",
+    "typecheck": "npm --prefix packages/shared-types run typecheck && npm --prefix packages/webrtc-client run typecheck && npm --prefix packages/ui run typecheck && npm --prefix packages/config run typecheck && npm --prefix apps/gateway run typecheck && npm --prefix apps/signaling run typecheck && npm --prefix apps/web run typecheck",
+    "test": "npm --prefix packages/shared-types run test && npm --prefix packages/webrtc-client run test && npm --prefix packages/ui run test && npm --prefix packages/config run test && npm --prefix apps/gateway run test && npm --prefix apps/signaling run test && npm --prefix apps/web run test"
+  },
+  "devDependencies": {
+    "@types/jsonwebtoken": "^9.0.10",
+    "@types/ws": "^8.18.1",
+    "pnpm": "^10.33.2"
+  }
+}

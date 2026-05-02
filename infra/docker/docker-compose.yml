@@ -1,0 +1,65 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: ai_creator_studio
+    ports: ["5432:5432"]
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+  redis:
+    image: redis:7-alpine
+    ports: ["6379:6379"]
+
+  gateway:
+    build:
+      context: ../..
+      dockerfile: infra/docker/Dockerfile.gateway
+    ports: ["4000:4000"]
+    environment:
+      PORT: 4000
+      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/ai_creator_studio
+      REDIS_URL: redis://redis:6379
+      SIGNALING_URL: ws://localhost:4001/ws
+      OBS_BASE_URL: http://localhost:3000
+      SESSION_TOKEN_SECRET: dev-secret
+      DEFAULT_WORKER_ENDPOINT: http://worker:8000
+      DEFAULT_WORKER_ID: worker-1
+      DEFAULT_WORKER_GPU: docker-dev
+    depends_on:
+      - postgres
+      - redis
+  signaling:
+    build:
+      context: ../..
+      dockerfile: infra/docker/Dockerfile.signaling
+    ports: ["4001:4001"]
+    environment:
+      PORT: 4001
+      SESSION_TOKEN_SECRET: dev-secret
+  web:
+    build:
+      context: ../..
+      dockerfile: infra/docker/Dockerfile.web
+    ports: ["3000:3000"]
+    environment:
+      NEXT_PUBLIC_GATEWAY_URL: http://localhost:4000
+    depends_on:
+      - gateway
+  worker:
+    build:
+      context: ../..
+      dockerfile: infra/docker/Dockerfile.worker
+    ports: ["8000:8000"]
+    environment:
+      PORT: 8000
+      WORKER_ID: worker-1
+      WORKER_ENDPOINT: http://worker:8000
+      GPU_TYPE: docker-dev
+      GATEWAY_URL: http://gateway:4000
+    depends_on:
+      - gateway
+
+volumes:
+  pgdata:
