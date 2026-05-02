@@ -223,6 +223,23 @@ class VideoTransformTrack(MediaStreamTrack):
         return new_frame
 
 
+class BlackVideoTrack(MediaStreamTrack):
+    kind = "video"
+
+    def __init__(self):
+        super().__init__()
+        self.width = 640
+        self.height = 360
+
+    async def recv(self):
+        pts, time_base = await self.next_timestamp()
+        image = np.zeros((self.height, self.width, 3), dtype=np.uint8)
+        frame = av.VideoFrame.from_ndarray(image, format="bgr24")
+        frame.pts = pts
+        frame.time_base = time_base
+        return frame
+
+
 state = WorkerState()
 
 
@@ -271,9 +288,16 @@ async def webrtc_offer(req: web.Request):
     return web.json_response({"sdp": pc.localDescription.sdp, "type": pc.localDescription.type})
 
 
-def create_peer_connection(peer_id: str) -> RTCPeerConnection:
+def create_peer_connection(peer_id: str, prime_source_sender: bool = False) -> RTCPeerConnection:
     pc = RTCPeerConnection()
     state.pcs.add(pc)
+
+    source_sender = None
+    if prime_source_sender:
+        try:
+            source_sender = pc.addTrack(BlackVideoTrack())
+        except Exception:
+            source_sender = None
 
     if state.source_output_track is not None and peer_id != state.source_peer_id:
         try:
@@ -291,7 +315,10 @@ def create_peer_connection(peer_id: str) -> RTCPeerConnection:
     def on_track(track):
         if track.kind == "video":
             transformed = VideoTransformTrack(track, state)
-            pc.addTrack(transformed)
+            if source_sender is not None:
+                asyncio.create_task(source_sender.replaceTrack(transformed))
+            else:
+                pc.addTrack(transformed)
             state.source_peer_id = peer_id
             state.source_output_track = transformed
 
@@ -323,7 +350,8 @@ async def signaling_worker_loop(session_id: str, signaling_url: str, signaling_t
                             peer_id = payload.get("peerId") or "browser"
                             if peer_id in peers:
                                 await peers[peer_id].close()
-                            pc = create_peer_connection(peer_id)
+                            is_first_source_offer = state.source_peer_id is None and state.source_output_track is None
+                            pc = create_peer_connection(peer_id, prime_source_sender=is_first_source_offer)
                             peers[peer_id] = pc
                             await pc.setRemoteDescription(RTCSessionDescription(sdp=sdp["sdp"], type=sdp["type"]))
 
