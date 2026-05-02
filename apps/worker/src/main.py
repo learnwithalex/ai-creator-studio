@@ -293,11 +293,12 @@ async def webrtc_offer(req: web.Request):
     try:
         body = await req.json()
         offer = RTCSessionDescription(sdp=body["sdp"], type=body["type"])
-        is_first_source_offer = state.source_peer_id is None and state.source_output_track is None
-        pc = create_peer_connection("browser-http", prime_source_sender=is_first_source_offer)
+        pc = create_peer_connection("browser-http", prime_source_sender=False)
         await pc.setRemoteDescription(offer)
 
-        if state.source_peer_id is None:
+        # For the direct studio preview path, wait for the inbound browser track
+        # and only then create the answer so the transformed sender is negotiated.
+        if state.source_peer_id is None or state.source_output_track is None:
             for _ in range(20):
                 if state.source_peer_id == "browser-http" and state.source_output_track is not None:
                     break
