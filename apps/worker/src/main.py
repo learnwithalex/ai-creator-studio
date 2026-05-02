@@ -10,6 +10,7 @@ import numpy as np
 from aiohttp import ClientSession, WSMsgType, web
 from aiortc import MediaStreamTrack, RTCPeerConnection, RTCSessionDescription
 from aiortc.sdp import candidate_from_sdp
+from aiortc.contrib.media import MediaRelay
 
 try:
     import onnxruntime as ort
@@ -183,6 +184,9 @@ class WorkerState:
         self.style: str = "default"
         self.pipeline = FaceSwapPipeline()
         self.pcs: Set[RTCPeerConnection] = set()
+        self.relay = MediaRelay()
+        self.source_peer_id: Optional[str] = None
+        self.source_output_track: Optional[MediaStreamTrack] = None
 
     def should_process(self) -> bool:
         min_gap = 1.0 / float(self.target_fps)
@@ -251,13 +255,15 @@ async def release(_: web.Request):
         state.signaling_task = None
     await asyncio.gather(*(pc.close() for pc in list(state.pcs)), return_exceptions=True)
     state.pcs.clear()
+    state.source_peer_id = None
+    state.source_output_track = None
     return web.json_response({"ok": True})
 
 
 async def webrtc_offer(req: web.Request):
     body = await req.json()
     offer = RTCSessionDescription(sdp=body["sdp"], type=body["type"])
-    pc = create_peer_connection()
+    pc = create_peer_connection("browser-http")
     await pc.setRemoteDescription(offer)
     answer = await pc.createAnswer()
     await pc.setLocalDescription(answer)
@@ -265,9 +271,15 @@ async def webrtc_offer(req: web.Request):
     return web.json_response({"sdp": pc.localDescription.sdp, "type": pc.localDescription.type})
 
 
-def create_peer_connection() -> RTCPeerConnection:
+def create_peer_connection(peer_id: str) -> RTCPeerConnection:
     pc = RTCPeerConnection()
     state.pcs.add(pc)
+
+    if state.source_output_track is not None and peer_id != state.source_peer_id:
+        try:
+            pc.addTrack(state.relay.subscribe(state.source_output_track))
+        except Exception:
+            pass
 
     @pc.on("connectionstatechange")
     async def on_connectionstatechange():
@@ -278,7 +290,10 @@ def create_peer_connection() -> RTCPeerConnection:
     @pc.on("track")
     def on_track(track):
         if track.kind == "video":
-            pc.addTrack(VideoTransformTrack(track, state))
+            transformed = VideoTransformTrack(track, state)
+            pc.addTrack(transformed)
+            state.source_peer_id = peer_id
+            state.source_output_track = transformed
 
     return pc
 
@@ -308,7 +323,7 @@ async def signaling_worker_loop(session_id: str, signaling_url: str, signaling_t
                             peer_id = payload.get("peerId") or "browser"
                             if peer_id in peers:
                                 await peers[peer_id].close()
-                            pc = create_peer_connection()
+                            pc = create_peer_connection(peer_id)
                             peers[peer_id] = pc
                             await pc.setRemoteDescription(RTCSessionDescription(sdp=sdp["sdp"], type=sdp["type"]))
                             answer = await pc.createAnswer()
