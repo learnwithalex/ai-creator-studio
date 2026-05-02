@@ -1,6 +1,6 @@
 "use client";
 
-import { connectWebRTC } from "@ai-creator/webrtc-client";
+import { connectWebRTCOverHttpOffer } from "@ai-creator/webrtc-client";
 import { useRef, useState } from "react";
 
 const gatewayBase = process.env.NEXT_PUBLIC_GATEWAY_URL ?? "http://localhost:4000";
@@ -34,14 +34,17 @@ export function StudioClient() {
     setObsUrl(started.obsUrl);
     setStatus("warming-up");
 
-    cleanupRef.current = await connectWebRTC(
-      { signalingUrl: started.signalingUrl, sessionId: started.sessionId, token: started.signalingToken, role: "browser", onRemoteStream: (stream: MediaStream) => {
+    cleanupRef.current = await connectWebRTCOverHttpOffer(
+      {
+        offerUrl: started.previewOfferUrl,
+        onRemoteStream: (stream: MediaStream) => {
         if (outputRef.current) {
           outputRef.current.srcObject = stream;
           void outputRef.current.play().catch(() => undefined);
         }
         setStatus("active");
-      } },
+      }
+      },
       media
     );
 

@@ -290,8 +290,16 @@ async def release(_: web.Request):
 async def webrtc_offer(req: web.Request):
     body = await req.json()
     offer = RTCSessionDescription(sdp=body["sdp"], type=body["type"])
-    pc = create_peer_connection("browser-http")
+    is_first_source_offer = state.source_peer_id is None and state.source_output_track is None
+    pc = create_peer_connection("browser-http", prime_source_sender=is_first_source_offer)
     await pc.setRemoteDescription(offer)
+
+    if state.source_peer_id is None:
+        for _ in range(20):
+            if state.source_peer_id == "browser-http" and state.source_output_track is not None:
+                break
+            await asyncio.sleep(0.05)
+
     answer = await pc.createAnswer()
     await pc.setLocalDescription(answer)
     await wait_for_ice_gathering_complete(pc)
@@ -439,11 +447,24 @@ async def on_cleanup(_: web.Application):
 
 
 async def run_worker_api():
+    @web.middleware
+    async def cors_middleware(request: web.Request, handler):
+        if request.method == "OPTIONS":
+            response = web.Response(status=204)
+        else:
+            response = await handler(request)
+        response.headers["Access-Control-Allow-Origin"] = "*"
+        response.headers["Access-Control-Allow-Headers"] = "Content-Type"
+        response.headers["Access-Control-Allow-Methods"] = "GET,POST,OPTIONS"
+        return response
+
     app = web.Application()
+    app.middlewares.append(cors_middleware)
     app.router.add_get("/health", health)
     app.router.add_post("/reserve", reserve)
     app.router.add_post("/release", release)
     app.router.add_post("/webrtc/offer", webrtc_offer)
+    app.router.add_options("/webrtc/offer", lambda _: web.Response(status=204))
     app.on_startup.append(on_startup)
     app.on_cleanup.append(on_cleanup)
     runner = web.AppRunner(app)
